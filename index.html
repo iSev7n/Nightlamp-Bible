@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#1e1e1e" />
+  <title>Nightlamp Bible</title>
+
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="stylesheet" href="./css/theme.css" />
+</head>
+
+<body>
+  <!-- Title Bar -->
+  <header class="titlebar">
+    <div class="titlebar-left">
+      <img src="./assets/logo.jpg" alt="Nightlamp Bible" class="app-logo" />
+      <div>
+        <div class="apptitle-main">Nightlamp</div>
+        <div class="apptitle-sub">Offline Bible</div>
+      </div>
+    </div>
+
+    <div class="titlebar-right">
+      <button id="installBtn" class="tb-btn" hidden>Install</button>
+      <button id="themeBtn" class="tb-icon" title="Toggle theme" aria-label="Toggle theme">🌙</button>
+      <button id="settingsBtn" class="tb-icon" title="Settings" aria-label="Settings">⚙️</button>
+    </div>
+  </header>
+
+  <!-- Workbench -->
+  <main class="workbench">
+    <!-- Activity Bar -->
+    <nav class="activitybar" aria-label="Activity Bar">
+      <button id="actExplorer" class="actbtn active" title="Explorer" aria-label="Explorer">🧩</button>
+      <button id="actSearch" class="actbtn" title="Search" aria-label="Search">🔎</button>
+    </nav>
+
+    <!-- Sidebar -->
+    <aside id="sidebar" class="sidebar" aria-label="Sidebar">
+      <!-- Close button (always accessible) -->
+      <button id="sidebarCloseBtn" class="sidebar-close" aria-label="Close sidebar" title="Close sidebar">‹</button>
+
+      <!-- Explorer Pane -->
+      <section id="paneExplorer">
+        <div class="pane-title">EXPLORER</div>
+
+        <div class="panel">
+          <div class="panel-h">Open Passage</div>
+
+          <label class="label" for="bookSelect">Book</label>
+          <select id="bookSelect" class="input"></select>
+
+          <div style="height:10px"></div>
+
+          <label class="label" for="chapterSelect">Chapter</label>
+          <select id="chapterSelect" class="input"></select>
+
+          <div style="height:10px"></div>
+
+          <div class="row row-go" style="align-items:flex-end;">
+            <div style="flex:1; min-width:140px;">
+              <label class="label" for="verseSelect">Verse</label>
+              <select id="verseSelect" class="input"></select>
+            </div>
+            <button id="goBtn" class="btn primary">Go</button>
+          </div>
+
+          <div class="hint" id="translationHint"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-h">Quick Tools</div>
+          <div class="row">
+            <button id="bookmarkBtn" class="btn">Bookmark Chapter</button>
+            <button id="copyBtn" class="btn">Copy Chapter</button>
+          </div>
+          <div class="hint" id="selectionHint">
+            Tip: click a verse to select it, then use the toolbar above.
+          </div>
+        </div>
+      </section>
+
+      <!-- Search Pane -->
+      <section id="paneSearch" hidden>
+        <div class="pane-title">SEARCH</div>
+
+        <div class="panel">
+          <div class="panel-h">Find Text</div>
+
+          <label class="label" for="searchInput">Query</label>
+          <input id="searchInput" class="input" placeholder="Search verses..." />
+
+          <div style="height:12px"></div>
+
+          <div class="row">
+            <button id="searchBtn" class="btn primary">Search</button>
+            <button id="clearSearchBtn" class="btn">Clear</button>
+          </div>
+
+          <div class="hint" id="searchStatus"></div>
+        </div>
+      </section>
+    </aside>
+
+    <!-- Editor -->
+    <section class="editor" aria-label="Editor">
+      <div class="tabbar" role="tablist" aria-label="Main tabs">
+        <button id="tabReader" class="tabbtn active" role="tab" aria-selected="true">Reader</button>
+        <button id="tabNotes" class="tabbtn" role="tab" aria-selected="false">Notes</button>
+        <button id="tabBookmarks" class="tabbtn" role="tab" aria-selected="false">Bookmarks</button>
+        <button id="tabTimeline" class="tabbtn" role="tab" aria-selected="false">Timeline</button>
+      </div>
+
+      <!-- READER PANEL -->
+      <section id="panelReader" class="panelpane">
+        <div class="topselectors">
+          <select id="topBookSelect" class="input"></select>
+          <select id="topChapterSelect" class="input" style="max-width:120px;"></select>
+        </div>
+
+        <div class="chapnav">
+          <div class="nav-left">
+            <button id="topPrevBtn" class="btn">Prev</button>
+            <button id="topNextBtn" class="btn">Next</button>
+          </div>
+
+          <div class="nav-right">
+            <button id="verseBookmarkBtn" class="toolbtn" title="Bookmark selected verse" aria-label="Bookmark verse">🔖</button>
+
+            <button id="boldBtn" class="toolbtn" title="Bold selected verse" aria-label="Bold"><span class="k">B</span></button>
+            <button id="underlineBtn" class="toolbtn" title="Underline selected verse" aria-label="Underline"><span class="k">U</span></button>
+
+            <div class="toolgroup">
+              <button id="highlightBtn" class="toolbtn" title="Highlight selected verse" aria-label="Highlight">🖍</button>
+              <div id="colorMenu" class="colormenu" hidden>
+                <button class="swatch" data-color="gold" title="Gold"></button>
+                <button class="swatch" data-color="mint" title="Mint"></button>
+                <button class="swatch" data-color="lav" title="Lavender"></button>
+                <button class="swatch" data-color="rose" title="Rose"></button>
+                <button class="swatch" data-color="sky" title="Sky"></button>
+                <button class="clear" data-color="none" title="Clear highlight">Clear</button>
+              </div>
+            </div>
+
+            <button id="noteBtn" class="toolbtn" title="Notes (selected verse)" aria-label="Notes">📝</button>
+            <button id="verseHelpBtn" class="toolbtn" title="Dive deeper (selected verse)" aria-label="Dive deeper">?</button>
+
+            <button id="collapseSidebarBtn" class="toolbtn" title="Toggle sidebar" aria-label="Toggle sidebar">☰</button>
+
+            <div id="selChip" class="selchip" title="Selected verse">No verse selected</div>
+          </div>
+        </div>
+
+        <div id="verses" class="reader" aria-label="Chapter verses"></div>
+      </section>
+
+      <!-- NOTES PANEL -->
+      <section id="panelNotes" class="panelpane" hidden>
+        <div class="chapnav">
+          <div class="nav-left">
+            <div class="pane-title" style="margin:0;">NOTES</div>
+          </div>
+          <div class="nav-right">
+            <button id="notesAllBtn" class="btn">All</button>
+            <button id="notesRecentBtn" class="btn">Recent</button>
+            <button id="notesFavBtn" class="btn">Favorites</button>
+            <button id="notesStudyBtn" class="btn">Study</button>
+            <button id="notesResearchBtn" class="btn">Research</button>
+            <button id="notesPersonalBtn" class="btn">Personal</button>
+          </div>
+        </div>
+
+        <div class="reader">
+          <div id="notesListMain" class="list"></div>
+        </div>
+      </section>
+
+      <!-- BOOKMARKS PANEL -->
+      <section id="panelBookmarks" class="panelpane" hidden>
+        <div class="chapnav">
+          <div class="nav-left">
+            <div class="pane-title" style="margin:0;">BOOKMARKS</div>
+          </div>
+          <div class="nav-right">
+            <button id="bookmarksChaptersBtnMain" class="btn">Bookmark Chapters</button>
+            <button id="bookmarksVersesBtnMain" class="btn">Bookmark Verses</button>
+            <button id="bookmarksHighlightsBtnMain" class="btn">Highlights</button>
+
+            <select id="hlFilterSelect" class="input" style="max-width:220px;" hidden>
+              <option value="all">All highlight types</option>
+              <option value="gold">Gold</option>
+              <option value="mint">Mint</option>
+              <option value="lav">Lavender</option>
+              <option value="rose">Rose</option>
+              <option value="sky">Sky</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="reader">
+          <div id="bookmarksListMain" class="list"></div>
+        </div>
+      </section>
+
+      <!-- TIMELINE PANEL -->
+      <section id="panelTimeline" class="panelpane" hidden>
+        <div class="chapnav">
+          <div class="nav-left">
+            <div class="pane-title" style="margin:0;">TIMELINE</div>
+          </div>
+          <div class="nav-right">
+            <div class="hint" style="margin:0;">Tap an era to jump to key passages.</div>
+          </div>
+        </div>
+
+        <div class="reader">
+          <div id="timelineList" class="timeline"></div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <!-- Status Bar -->
+  <footer class="statusbar" aria-label="Status Bar">
+    <div class="sb-left">
+      <div class="sb-item">Network: <strong id="netStatus">—</strong></div>
+      <div class="sb-item">DB: <strong id="dbStatus">—</strong></div>
+    </div>
+    <div class="sb-right">
+      <div class="sb-item">Translation: <strong id="sbTranslation">KJV</strong></div>
+      <div class="sb-item">Mode: <strong id="sbMode">Offline</strong></div>
+    </div>
+  </footer>
+
+  <!-- Overlay -->
+  <div id="resultsOverlay" class="overlay" hidden>
+    <div class="overlay-card">
+      <div class="overlay-head">
+        <div id="overlayTitle" class="overlay-title">Results</div>
+        <button id="overlayCloseBtn" class="iconbtn" aria-label="Close">✕</button>
+      </div>
+      <div id="overlayBody" class="overlay-body"></div>
+    </div>
+  </div>
+
+  <!-- Note Modal -->
+  <div id="noteModal" class="overlay" hidden>
+    <div class="overlay-card verse-card" style="width:min(760px, 92vw); height:min(70vh, 640px);">
+      <div class="overlay-head">
+        <div class="overlay-title">
+          <div style="font-weight:900" id="noteRef">Note</div>
+          <div style="font-size:11px;color:var(--muted)" id="noteSub">Selected verse</div>
+        </div>
+        <button id="noteCloseBtn" class="iconbtn" aria-label="Close">✕</button>
+      </div>
+
+      <div class="overlay-body">
+        <div id="notePreview" class="v-preview">Verse preview</div>
+
+        <div class="v-section">
+          <label class="label" for="noteTypeSelect">Type</label>
+          <select id="noteTypeSelect" class="input">
+            <option value="study">Study</option>
+            <option value="research">Research</option>
+            <option value="personal">Personal</option>
+          </select>
+        </div>
+
+        <div class="v-section">
+          <label class="check">
+            <input id="noteFavoriteToggle" type="checkbox" />
+            Favorite
+          </label>
+        </div>
+
+        <div class="v-section">
+          <label class="label" for="noteText">Note</label>
+          <textarea id="noteText" class="input textarea" placeholder="Write your note..."></textarea>
+        </div>
+
+        <div class="row">
+          <button id="saveNoteBtn" class="btn primary">Save</button>
+          <button id="removeNoteBtn" class="btn danger">Remove Note</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settingsModal" class="overlay" hidden>
+    <div class="overlay-card" style="width:min(560px, 92vw); height:auto;">
+      <div class="overlay-head">
+        <div class="overlay-title">Settings</div>
+        <button id="settingsCloseBtn" class="iconbtn" aria-label="Close">✕</button>
+      </div>
+
+      <div class="overlay-body">
+        <div class="panel" style="margin:0;">
+          <div class="panel-h">Translation</div>
+
+          <label class="label" for="translationSelect">Bible Translation</label>
+          <select id="translationSelect" class="input"></select>
+
+          <div class="hint">
+            NIV requires a licensed source. KJV is stored locally.
+          </div>
+        </div>
+
+        <div style="height:10px"></div>
+
+        <div class="panel" style="margin:0;">
+          <div class="panel-h">Appearance</div>
+
+          <label class="label" for="themeVariantSelect">Color Variant</label>
+          <select id="themeVariantSelect" class="input">
+            <option value="blue">Blue</option>
+            <option value="purple">Purple</option>
+            <option value="green">Green</option>
+            <option value="amber">Amber</option>
+            <option value="rose">Rose</option>
+          </select>
+
+          <div style="height:10px"></div>
+
+          <label class="label" for="fontSizeSelect">Reader Font Size</label>
+          <select id="fontSizeSelect" class="input">
+            <option value="12">Small (12)</option>
+            <option value="14" selected>Default (14)</option>
+            <option value="16">Medium (16)</option>
+            <option value="18">Large (18)</option>
+            <option value="20">Extra Large (20)</option>
+            <option value="22">Huge (22)</option>
+          </select>
+
+          <div class="hint">
+            Font size applies to the Reader text only.
+          </div>
+        </div>
+
+        <div style="height:10px"></div>
+
+        <div class="panel" style="margin:0;">
+          <div class="panel-h">Highlight Meanings</div>
+          <div class="hint" style="margin-top:0;">
+            Optional: rename what each highlight color means for your study.
+          </div>
+
+          <div class="grid2" style="margin-top:10px;">
+            <div>
+              <label class="label" for="hlLabelGold">Gold</label>
+              <input id="hlLabelGold" class="input" placeholder="Promise" />
+            </div>
+            <div>
+              <label class="label" for="hlLabelMint">Mint</label>
+              <input id="hlLabelMint" class="input" placeholder="Command" />
+            </div>
+            <div>
+              <label class="label" for="hlLabelLav">Lavender</label>
+              <input id="hlLabelLav" class="input" placeholder="Prophecy" />
+            </div>
+            <div>
+              <label class="label" for="hlLabelRose">Rose</label>
+              <input id="hlLabelRose" class="input" placeholder="Warning" />
+            </div>
+            <div>
+              <label class="label" for="hlLabelSky">Sky</label>
+              <input id="hlLabelSky" class="input" placeholder="Fulfillment" />
+            </div>
+          </div>
+
+          <div class="row" style="margin-top:10px;">
+            <button id="saveHlLabelsBtn" class="btn primary">Save Labels</button>
+            <button id="resetHlLabelsBtn" class="btn">Reset Defaults</button>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
