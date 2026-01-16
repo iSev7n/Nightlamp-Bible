@@ -1,8 +1,7 @@
-# 🌙 Nightlamp Bible
 
-<center>![Nightlamp Bible Banner](assets/Banner.png)</center>
+![Nightlamp Bible Banner](assets/banner.png)
 
-**Nightlamp Bible** is a fast, offline-first Scripture reader designed for focused study, highlighting, note-taking, and bookmarking — even with no internet connection. It is built as a Progressive Web App (PWA) and runs smoothly on desktop and mobile devices.
+**Night Lamp Bible Reader** is a fast, offline-first Scripture reader designed for focused study, highlighting, note-taking, and bookmarking — even with no internet connection. It is built as a Progressive Web App (PWA) and runs smoothly on desktop and mobile devices.
 
 ---
 
@@ -52,7 +51,7 @@
 
 ---
 
-## 📦 Included Bible Translations
+## Included Bible Translations
 
 - **KJV (English)** – Stored locally for full offline use
 - **ESV (English)**
@@ -78,7 +77,7 @@ No external libraries or frameworks required.
 
 ---
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Run Locally
 
@@ -108,7 +107,7 @@ Once installed, the app runs fully offline.
 
 ---
 
-## 🗃 Data Storage
+## Data Storage
 
 - Notes, bookmarks, highlights, and settings are stored locally using **IndexedDB**
 - No accounts, no tracking, no cloud sync
@@ -125,35 +124,38 @@ Once installed, the app runs fully offline.
 
 ---
 
-## 🧭 Project Structure
+## Project Structure
 
-
+```text
+/
 ├── index.html
 ├── manifest.webmanifest
 ├── sw.js
 ├── css/
-│ └── theme.css
+│   └── theme.css
 ├── js/
-│ ├── app.js
-│ ├── db.js
-│ ├── ui.js
-│ ├── providers.js
-│ └── importKJV.js
+│   ├── app.js
+│   ├── db.js
+│   ├── ui.js
+│   ├── providers.js
+│   └── importKJV.js
 ├── data/
-│ ├── EnglishKJBible.xml
-│ ├── EnglishESVBible.xml
-│ ├── EnglishNIVBible.xml
-│ ├── EnglishAmplifiedBible.xml
-│ ├── EnglishAmplifiedClassicBible.xml
-│ └── SpanishNVIBible.xml
+│   ├── EnglishKJBible.xml
+│   ├── EnglishESVBible.xml
+│   ├── EnglishNIVBible.xml
+│   ├── EnglishAmplifiedBible.xml
+│   ├── EnglishAmplifiedClassicBible.xml
+│   └── SpanishNVIBible.xml
 └── assets/
-├── logo.jpg
-├── icon-192.png
-└── icon-512.png
+    ├── logo.jpg
+    ├── banner.png
+    ├── icon-192.png
+    └── icon-512.png
+```
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome.
 
@@ -173,7 +175,7 @@ This project is licensed under the **MIT License**.
 
 ---
 
-## 🙏 Acknowledgment
+## Acknowledgment
 
 Built to provide a calm, distraction-free space for bible reading and study.
 
