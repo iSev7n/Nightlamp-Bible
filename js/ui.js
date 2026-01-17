@@ -135,10 +135,80 @@ export function renderOverlayList(container, items){
       }
     }
 
+    
+
     card.appendChild(title);
     card.appendChild(sub);
     if (actions.childElementCount) card.appendChild(actions);
 
     container.appendChild(card);
   }
+}
+
+export function createDialog(){
+  const $ = (id) => document.getElementById(id);
+
+  const dlg = $("appDialog");
+  const titleEl = $("dialogTitle");
+  const msgEl = $("dialogMsg");
+  const actionsEl = $("dialogActions");
+  const closeBtn = $("dialogCloseBtn");
+  const okBtn = $("dialogOkBtn");
+
+  if (!dlg || !titleEl || !msgEl || !actionsEl || !closeBtn || !okBtn){
+    return {
+      show(){},
+      hide(){}
+    };
+  }
+
+  const hide = () => {
+    dlg.hidden = true;
+    actionsEl.innerHTML = `<button id="dialogOkBtn" class="btn primary">OK</button>`;
+    const newOk = document.getElementById("dialogOkBtn");
+    if (newOk) newOk.addEventListener("click", hide);
+  };
+
+  closeBtn.addEventListener("click", hide);
+  dlg.addEventListener("click", (e) => {
+    if (e.target === dlg) hide();
+  });
+
+  okBtn.addEventListener("click", hide);
+
+  const show = (opts = {}) => {
+    const {
+      title = "Notice",
+      message = "",
+      buttons = null
+    } = opts;
+
+    titleEl.textContent = title;
+    msgEl.textContent = message;
+
+    if (Array.isArray(buttons) && buttons.length){
+      actionsEl.innerHTML = "";
+      for (const b of buttons){
+        const btn = document.createElement("button");
+        btn.className = b.primary ? "btn primary" : "btn";
+        btn.textContent = b.text || "OK";
+        btn.addEventListener("click", async () => {
+          try { if (typeof b.onClick === "function") await b.onClick(); }
+          finally { hide(); }
+        });
+        actionsEl.appendChild(btn);
+      }
+    } else {
+      actionsEl.innerHTML = "";
+      const btn = document.createElement("button");
+      btn.className = "btn primary";
+      btn.textContent = "OK";
+      btn.addEventListener("click", hide);
+      actionsEl.appendChild(btn);
+    }
+
+    dlg.hidden = false;
+  };
+
+  return { show, hide };
 }

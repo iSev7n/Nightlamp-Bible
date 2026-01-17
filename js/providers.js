@@ -167,3 +167,41 @@ export async function loadSetting(db, key) {
   const row = await getOne(db, stores().SETTINGS, key);
   return row ? row.value : null;
 }
+
+/* ------------------------------ Dive Deeper (Offline Packs) ------------------------------ */
+
+let _diveCrossrefs = null;
+let _diveExplain = null;
+let _diveTags = null;
+
+async function loadJsonOnce(url) {
+  const res = await fetch(url);
+  if (!res.ok) return null;
+  return await res.json();
+}
+
+function verseKey(book, chapter, verse) {
+  return `${book}|${chapter}|${verse}`;
+}
+
+export async function getDiveCrossrefs(book, chapter, verse) {
+  if (_diveCrossrefs === null) {
+    _diveCrossrefs = (await loadJsonOnce("./data/dive_crossrefs.json")) || {};
+  }
+  return _diveCrossrefs[verseKey(book, chapter, verse)] || [];
+}
+
+export async function getDiveExplain(book, chapter, verse) {
+  if (_diveExplain === null) {
+    _diveExplain = (await loadJsonOnce("./data/dive_explain.json")) || {};
+  }
+  return _diveExplain[verseKey(book, chapter, verse)] || null;
+}
+
+export async function getDiveTags(book, chapter, verse) {
+  if (_diveTags === null) {
+    _diveTags = (await loadJsonOnce("./data/dive_tags.json")) || {};
+  }
+  return _diveTags[verseKey(book, chapter, verse)] || [];
+}
+

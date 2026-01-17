@@ -1,12 +1,52 @@
 /**
  * app.js
- * -----------------------------------------------------------------------------
- * Robust build:
- * - Never crashes if optional UI IDs are missing
- * - Supports translation via dropdown (translationSelect) OR tabs (tabKJV/tabNIV)
- * - Imports multiple translations from XML into IndexedDB (offline-first)
- * - Adds Timeline tab (Era cards w/ jump chips)
- * - Adds Smart Highlights labels + Highlights filter in Bookmarks tab
+ * =============================================================================
+ * 
+ * What this file does:
+ * - Initializes the app (DB, settings, service worker, UI)
+ * - Loads Bible text (offline / imported XML in IndexedDB)
+ * - Renders chapters + handles verse selection
+ * - Manages verse styling (highlight, bold, underline, verse bookmark)
+ * - Provides Notes (per-verse notes modal + Notes tab list)
+ * - Provides Bookmarks (chapter bookmarks + verse bookmarks + highlights list)
+ * - Provides Search (sidebar search + results overlay)
+ * - Provides Timeline (quick jump eras)
+ *
+ * Fixes included (without changing features):
+ * - Implements createDialog() locally (avoids missing import)
+ * - Adds toast() helper (was referenced but not defined)
+ * - Organizes code into numbered sections for easy maintenance
+ *
+ * =============================================================================
+ * SECTION MAP
+ * =============================================================================
+ *  1) CONFIG / CONSTANTS
+ *  2) STATE
+ *  3) DOM HELPERS (never crash)
+ *  4) DIALOG + TOAST (createDialog + toast)
+ *  5) HIGHLIGHT LABEL HELPERS
+ *  6) MAIN TABS
+ *  7) TIMELINE
+ *  8) SERVICE WORKER + INSTALL
+ *  9) SIDEBAR (Explorer/Search) + RESPONSIVE
+ * 10) THEME + APPEARANCE
+ * 11) HIGHLIGHT LABELS (Smart Highlights)
+ * 12) SETTINGS + TRANSLATIONS
+ * 13) IMPORTS (KJV + other translations)
+ * 14) BOOK/CHAPTER/VERSE SELECTS
+ * 15) CHAPTER LOADING + VERSE SELECTION
+ * 16) READER NAV (Prev/Next)
+ * 17) SIDEBAR "GO" (jump to verse)
+ * 18) OVERLAY (Search/Dive Deeper)
+ * 19) NOTES MODAL (📝)
+ * 20) VERSE ACTIONS (style upsert)
+ * 21) VERSE TOOLBAR (bold, underline, bookmark, highlight, notes, help)
+ * 22) NOTES LIST (Notes tab)
+ * 23) BOOKMARKS (Bookmarks tab)
+ * 24) SEARCH (Sidebar Search pane)
+ * 25) QUICK TOOLS (Bookmark chapter, Copy chapter)
+ * 26) BOOT (init)
+ * =============================================================================
  */
 
 import { openDb, stores, countStore, searchTextCursor } from "./db.js";
@@ -22,13 +62,21 @@ import {
   verseStyleKey,
   saveVerseStyle,
   saveSetting,
-  loadSetting
+  loadSetting,
+  getDiveCrossrefs,
+  getDiveExplain,
+  getDiveTags,
 } from "./providers.js";
 import { setNetStatus, renderVerses, renderOverlayList } from "./ui.js";
 import { importKJVFromXML, importBibleFromXML } from "./importKJV.js";
 
+/* =============================================================================
+ * 1) CONFIG / CONSTANTS
+ * ============================================================================= */
+
 const NIV_CONFIG = { proxyBaseUrl: "https://YOUR-DOMAIN.com/api", token: "" };
 
+// Canonical book names (must match importKJV.js mapping)
 const BOOKS = [
   "Genesis","Exodus","Leviticus","Numbers","Deuteronomy",
   "Joshua","Judges","Ruth","1 Samuel","2 Samuel",
@@ -148,15 +196,7 @@ const TIMELINE_ERAS = [
   }
 ];
 
-/* ------------------------------ Helpers ------------------------------ */
-
-const $ = (id) => document.getElementById(id);
-const on = (id, evt, fn) => {
-  const el = $(id);
-  if (!el) return false;
-  el.addEventListener(evt, fn);
-  return true;
-};
+/* ------------------------------ Smart Highlights ------------------------------ */
 
 const DEFAULT_HL_LABELS = {
   gold: "Promise",
@@ -165,6 +205,10 @@ const DEFAULT_HL_LABELS = {
   rose: "Warning",
   sky: "Fulfillment"
 };
+
+/* =============================================================================
+ * 2) STATE
+ * ============================================================================= */
 
 const state = {
   db: null,
@@ -182,24 +226,148 @@ const state = {
   hlLabels: { ...DEFAULT_HL_LABELS }
 };
 
-function toast(msg){
-  const el = $("dbStatus");
-  if (!el) return;
-  el.textContent = msg;
-  setTimeout(() => {
-    if ($("dbStatus")) $("dbStatus").textContent = "IndexedDB ready";
-  }, 1200);
+/* =============================================================================
+ * 3) DOM HELPERS (never crash)
+ * ============================================================================= */
+
+const $ = (id) => document.getElementById(id);
+
+const on = (id, evt, fn) => {
+  const el = $(id);
+  if (!el) return false;
+  el.addEventListener(evt, fn);
+  return true;
+};
+
+/* =============================================================================
+ * 4) DIALOG + TOAST (fixes missing createDialog + missing toast())
+ * ============================================================================= */
+
+/**
+ * Uses the existing #appDialog markup in index.html.
+ * Provides: dialog.show({title,message,actions?}), dialog.hide()
+ */
+function createDialog() {
+  const root = $("appDialog");
+  const titleEl = $("dialogTitle");
+  const msgEl = $("dialogMsg");
+  const actionsEl = $("dialogActions");
+  const okBtn = $("dialogOkBtn");
+  const closeBtn = $("dialogCloseBtn");
+
+  const hide = () => {
+    if (root) root.hidden = true;
+  };
+
+  const show = ({ title = "Notice", message = "", actions = null } = {}) => {
+    if (!root || !titleEl || !msgEl) {
+      // Fallback: never crash if dialog markup missing
+      console.log("[Dialog]", title, message);
+      return;
+    }
+
+    titleEl.textContent = title;
+    msgEl.textContent = message;
+
+    // Default OK action
+    if (actionsEl) {
+      actionsEl.innerHTML = "";
+
+      if (Array.isArray(actions) && actions.length) {
+        for (const a of actions) {
+          const b = document.createElement("button");
+          b.className = a.primary ? "btn primary" : "btn";
+          b.textContent = a.text || "OK";
+          b.addEventListener("click", () => {
+            try { a.onClick?.(); } finally { hide(); }
+          });
+          actionsEl.appendChild(b);
+        }
+      } else {
+        // Standard OK button
+        const b = document.createElement("button");
+        b.className = "btn primary";
+        b.textContent = "OK";
+        b.addEventListener("click", hide);
+        actionsEl.appendChild(b);
+      }
+    }
+
+    root.hidden = false;
+  };
+
+  // Close wiring
+  if (closeBtn) closeBtn.addEventListener("click", hide);
+  if (okBtn) okBtn.addEventListener("click", hide);
+
+  if (root) {
+    root.addEventListener("click", (e) => {
+      if (e.target === root) hide();
+    });
+  }
+
+  return { show, hide };
 }
 
-function ensureSelected(){
-  if (!state.selected){
-    toast("Select a verse first.");
+/**
+ * Lightweight toast (non-blocking).
+ * If toast container doesn't exist, it creates one (minimal UI impact).
+ */
+function toast(message = "") {
+  const msg = String(message || "").trim();
+  if (!msg) return;
+
+  let host = document.getElementById("toastHost");
+  if (!host) {
+    host = document.createElement("div");
+    host.id = "toastHost";
+    host.style.position = "fixed";
+    host.style.left = "50%";
+    host.style.bottom = "18px";
+    host.style.transform = "translateX(-50%)";
+    host.style.zIndex = "9999";
+    host.style.pointerEvents = "none";
+    document.body.appendChild(host);
+  }
+
+  const t = document.createElement("div");
+  t.textContent = msg;
+  t.style.pointerEvents = "none";
+  t.style.marginTop = "8px";
+  t.style.padding = "10px 12px";
+  t.style.borderRadius = "12px";
+  t.style.background = "rgba(0,0,0,0.75)";
+  t.style.color = "#fff";
+  t.style.fontSize = "13px";
+  t.style.maxWidth = "85vw";
+  t.style.textAlign = "center";
+  t.style.boxShadow = "0 8px 30px rgba(0,0,0,0.25)";
+
+  host.appendChild(t);
+
+  // Fade-out + remove
+  setTimeout(() => {
+    t.style.transition = "opacity 250ms ease";
+    t.style.opacity = "0";
+    setTimeout(() => t.remove(), 260);
+  }, 1300);
+}
+
+let dialog = null;
+
+function popupMessage(title, message) {
+  dialog?.show({ title: title || "Notice", message: message || "" });
+}
+
+function ensureSelected() {
+  if (!state.selected) {
+    dialog?.show({ title: "Select a Verse", message: "Select a verse first." });
     return false;
   }
   return true;
 }
 
-function updateSelectionChip(){
+function updateSelectionChip() {
   const chip = $("selChip");
   if (!chip) return;
   chip.textContent = state.selected
@@ -207,14 +375,20 @@ function updateSelectionChip(){
     : "No verse selected";
 }
 
-function hlLabel(color){
+/* =============================================================================
+ * 5) HIGHLIGHT LABEL HELPERS
+ * ============================================================================= */
+
+function hlLabel(color) {
   const c = String(color || "").toLowerCase();
   return state.hlLabels[c] || DEFAULT_HL_LABELS[c] || c || "";
 }
 
-/* ----------------------------- Tabs ----------------------------- */
+/* =============================================================================
+ * 6) MAIN TABS
+ * ============================================================================= */
 
-function setMainTab(name){
+function setMainTab(name) {
   const r = name === "reader";
   const n = name === "notes";
   const b = name === "bookmarks";
@@ -240,19 +414,22 @@ function setMainTab(name){
   if (t && $("timelineList")) renderTimelineInto($("timelineList"));
 }
 
-function wireMainTabs(){
+function wireMainTabs() {
   on("tabReader", "click", () => setMainTab("reader"));
   on("tabNotes", "click", () => setMainTab("notes"));
   on("tabBookmarks", "click", () => setMainTab("bookmarks"));
   on("tabTimeline", "click", () => setMainTab("timeline"));
 }
 
-/* ------------------------------ Timeline ------------------------------ */
+/* =============================================================================
+ * 7) TIMELINE
+ * ============================================================================= */
 
-function renderTimelineInto(targetEl){
+function renderTimelineInto(targetEl) {
+  if (!targetEl) return;
   targetEl.innerHTML = "";
 
-  for (const era of TIMELINE_ERAS){
+  for (const era of TIMELINE_ERAS) {
     const card = document.createElement("div");
     card.className = "t-era";
 
@@ -267,7 +444,7 @@ function renderTimelineInto(targetEl){
     const chips = document.createElement("div");
     chips.className = "t-chips";
 
-    for (const a of era.anchors){
+    for (const a of era.anchors) {
       const chip = document.createElement("button");
       chip.className = "t-chip";
       chip.textContent = a.label;
@@ -287,15 +464,18 @@ function renderTimelineInto(targetEl){
   }
 }
 
-/* ------------------------------ SW + Install ------------------------------ */
+/* =============================================================================
+ * 8) SERVICE WORKER + INSTALL
+ * ============================================================================= */
 
-async function registerServiceWorker(){
+async function registerServiceWorker() {
   if (!("serviceWorker" in navigator)) return;
   await navigator.serviceWorker.register("./sw.js");
 }
 
-function setupInstallButton(){
+function setupInstallButton() {
   let deferredPrompt = null;
+
   window.addEventListener("beforeinstallprompt", (e) => {
     e.preventDefault();
     deferredPrompt = e;
@@ -311,24 +491,24 @@ function setupInstallButton(){
   });
 }
 
-/* ------------------------------ Sidebar (Explorer/Search) ------------------------------ */
+/* =============================================================================
+ * 9) SIDEBAR (Explorer/Search) + RESPONSIVE
+ * ============================================================================= */
 
-function isMobileLayout(){
+function isMobileLayout() {
   return window.matchMedia("(max-width: 900px)").matches;
 }
 
-function setPane(name){
+function setPane(name) {
   if ($("actExplorer")) $("actExplorer").classList.toggle("active", name === "explorer");
   if ($("actSearch")) $("actSearch").classList.toggle("active", name === "search");
   if ($("paneExplorer")) $("paneExplorer").hidden = name !== "explorer";
   if ($("paneSearch")) $("paneSearch").hidden = name !== "search";
 }
 
-function setupActivityBar(){
+function setupActivityBar() {
   const isSidebarVisible = () => {
-    if (isMobileLayout()) {
-      return document.body.classList.contains("sidebar-drawer-open");
-    }
+    if (isMobileLayout()) return document.body.classList.contains("sidebar-drawer-open");
     return !document.body.classList.contains("sidebar-hidden");
   };
 
@@ -357,13 +537,13 @@ function setupActivityBar(){
     const alreadyActive = !!btn?.classList.contains("active");
     const visible = isSidebarVisible();
 
-    // ✅ If this pane is active AND sidebar is currently visible -> CLOSE
+    // If this pane is active AND sidebar is visible -> close
     if (alreadyActive && visible) {
       await closeSidebar();
       return;
     }
 
-    // ✅ Otherwise OPEN sidebar and show requested pane
+    // Otherwise open and show pane
     await openSidebar();
     setPane(pane);
   };
@@ -372,11 +552,8 @@ function setupActivityBar(){
   on("actSearch", "click", () => togglePane("search"));
 }
 
-
-/* ------------------------------ Sidebar Toggle ------------------------------ */
-
-async function toggleSidebar(){
-  if (isMobileLayout()){
+async function toggleSidebar() {
+  if (isMobileLayout()) {
     const open = document.body.classList.toggle("sidebar-drawer-open");
     await saveSetting(state.db, "drawerOpen", open ? "1" : "0");
     return;
@@ -385,9 +562,10 @@ async function toggleSidebar(){
   await saveSetting(state.db, "sidebarHidden", hidden ? "1" : "0");
 }
 
-function setupSidebarCollapse(){
+function setupSidebarCollapse() {
   on("collapseSidebarBtn", "click", toggleSidebar);
 
+  // Click outside drawer closes it on mobile
   document.addEventListener("click", (e) => {
     if (!isMobileLayout()) return;
     if (!document.body.classList.contains("sidebar-drawer-open")) return;
@@ -401,14 +579,14 @@ function setupSidebarCollapse(){
     const clickedActivity = activity.contains(e.target);
     const clickedToggle = toggle.contains(e.target);
 
-    if (!clickedInsideSidebar && !clickedActivity && !clickedToggle){
+    if (!clickedInsideSidebar && !clickedActivity && !clickedToggle) {
       document.body.classList.remove("sidebar-drawer-open");
       saveSetting(state.db, "drawerOpen", "0");
     }
   }, true);
 }
 
-async function restoreSidebarState(){
+async function restoreSidebarState() {
   const v = await loadSetting(state.db, "sidebarHidden");
   if (v === "1") document.body.classList.add("sidebar-hidden");
 
@@ -416,9 +594,11 @@ async function restoreSidebarState(){
   if (d === "1") document.body.classList.add("sidebar-drawer-open");
 }
 
-/* ------------------------------ Theme Button ------------------------------ */
+/* =============================================================================
+ * 10) THEME + APPEARANCE
+ * ============================================================================= */
 
-async function setupTheme(){
+async function setupTheme() {
   const saved = await loadSetting(state.db, "theme");
   if (saved) document.documentElement.dataset.theme = saved;
 
@@ -434,9 +614,7 @@ async function setupTheme(){
   });
 }
 
-/* ------------------------------ Appearance ------------------------------ */
-
-function accentForVariant(v){
+function accentForVariant(v) {
   switch (v) {
     case "purple": return "#7c5cff";
     case "green": return "#2bb673";
@@ -447,16 +625,16 @@ function accentForVariant(v){
   }
 }
 
-function applyAccentVariant(variant){
+function applyAccentVariant(variant) {
   document.documentElement.style.setProperty("--accent", accentForVariant(variant));
 }
 
-function applyReaderFontSize(px){
+function applyReaderFontSize(px) {
   const safe = Math.max(10, Math.min(30, Number(px) || 14));
   document.documentElement.style.setProperty("--reader-font-size", `${safe}px`);
 }
 
-async function restoreAppearanceSettings(){
+async function restoreAppearanceSettings() {
   const variant = (await loadSetting(state.db, "themeVariant")) || "blue";
   const fontPx = (await loadSetting(state.db, "readerFontPx")) || "14";
 
@@ -467,16 +645,18 @@ async function restoreAppearanceSettings(){
   if ($("fontSizeSelect")) $("fontSizeSelect").value = String(fontPx);
 }
 
-/* ------------------------------ Highlight Labels (Smart Highlights) ------------------------------ */
+/* =============================================================================
+ * 11) HIGHLIGHT LABELS (Smart Highlights)
+ * ============================================================================= */
 
-async function loadHighlightLabels(){
-  for (const k of Object.keys(DEFAULT_HL_LABELS)){
+async function loadHighlightLabels() {
+  for (const k of Object.keys(DEFAULT_HL_LABELS)) {
     const v = await loadSetting(state.db, `hlLabel_${k}`);
     if (v) state.hlLabels[k] = v;
   }
 }
 
-function populateHighlightLabelsUI(){
+function populateHighlightLabelsUI() {
   if ($("hlLabelGold")) $("hlLabelGold").value = state.hlLabels.gold || DEFAULT_HL_LABELS.gold;
   if ($("hlLabelMint")) $("hlLabelMint").value = state.hlLabels.mint || DEFAULT_HL_LABELS.mint;
   if ($("hlLabelLav")) $("hlLabelLav").value = state.hlLabels.lav || DEFAULT_HL_LABELS.lav;
@@ -484,7 +664,7 @@ function populateHighlightLabelsUI(){
   if ($("hlLabelSky")) $("hlLabelSky").value = state.hlLabels.sky || DEFAULT_HL_LABELS.sky;
 }
 
-async function saveHighlightLabelsFromUI(){
+async function saveHighlightLabelsFromUI() {
   const map = {
     gold: $("hlLabelGold")?.value,
     mint: $("hlLabelMint")?.value,
@@ -493,22 +673,22 @@ async function saveHighlightLabelsFromUI(){
     sky: $("hlLabelSky")?.value
   };
 
-  for (const [k, raw] of Object.entries(map)){
+  for (const [k, raw] of Object.entries(map)) {
     const v = (raw || "").trim() || DEFAULT_HL_LABELS[k];
     state.hlLabels[k] = v;
     await saveSetting(state.db, `hlLabel_${k}`, v);
   }
 }
 
-async function resetHighlightLabels(){
+async function resetHighlightLabels() {
   state.hlLabels = { ...DEFAULT_HL_LABELS };
   populateHighlightLabelsUI();
-  for (const [k, v] of Object.entries(DEFAULT_HL_LABELS)){
+  for (const [k, v] of Object.entries(DEFAULT_HL_LABELS)) {
     await saveSetting(state.db, `hlLabel_${k}`, v);
   }
 }
 
-function populateHighlightFilterUI(){
+function populateHighlightFilterUI() {
   const sel = $("hlFilterSelect");
   if (!sel) return;
 
@@ -527,16 +707,18 @@ function populateHighlightFilterUI(){
   if (!sel.value) sel.value = "all";
 }
 
-/* ------------------------------ Settings / Translations ------------------------------ */
+/* =============================================================================
+ * 12) SETTINGS + TRANSLATIONS
+ * ============================================================================= */
 
-function openSettings(){ if ($("settingsModal")) $("settingsModal").hidden = false; }
-function closeSettings(){ if ($("settingsModal")) $("settingsModal").hidden = true; }
+function openSettings() { if ($("settingsModal")) $("settingsModal").hidden = false; }
+function closeSettings() { if ($("settingsModal")) $("settingsModal").hidden = true; }
 
-function translationMeta(id){
+function translationMeta(id) {
   return TRANSLATIONS.find(t => t.id === id) || TRANSLATIONS[0];
 }
 
-async function updateBottomBarForTranslation(){
+async function updateBottomBarForTranslation() {
   const meta = translationMeta(state.translation);
 
   if ($("sbTranslation")) $("sbTranslation").textContent = meta.id;
@@ -555,7 +737,7 @@ async function updateBottomBarForTranslation(){
   }
 }
 
-function populateTranslationSelect(){
+function populateTranslationSelect() {
   const sel = $("translationSelect");
   if (!sel) return;
 
@@ -570,10 +752,10 @@ function populateTranslationSelect(){
   });
 }
 
-async function ensureTranslationImported(translationId){
+async function ensureTranslationImported(translationId) {
   const meta = translationMeta(translationId);
 
-  if (translationId === "KJV"){
+  if (translationId === "KJV") {
     await ensureKJVImported();
     return;
   }
@@ -582,15 +764,15 @@ async function ensureTranslationImported(translationId){
   const count = await countStore(state.db, storeName);
   if (count > 0) return;
 
-  toast(`Importing ${meta.id}…`);
+  dialog?.show({ title: "Importing", message: `Importing ${meta.id}...` });
   await importBibleFromXML(meta.xml, storeName, (n) => {
     toast(`Importing ${meta.id}… ${n.toLocaleString()} verses`);
   });
   toast(`${meta.id} imported.`);
 }
 
-function setTranslationHint(){
-  if ($("translationHint")){
+function setTranslationHint() {
+  if ($("translationHint")) {
     const meta = translationMeta(state.translation);
     $("translationHint").textContent =
       `${meta.label} is stored locally for full offline reading.`;
@@ -600,10 +782,11 @@ function setTranslationHint(){
   if ($("sbMode")) $("sbMode").textContent = "Offline";
 }
 
-async function setTranslation(t){
+async function setTranslation(t) {
   state.translation = t;
   await saveSetting(state.db, "translation", t);
 
+  // Legacy tabs (if they exist in older HTML)
   if ($("tabKJV")) $("tabKJV").setAttribute("aria-selected", t === "KJV" ? "true" : "false");
   if ($("tabNIV")) $("tabNIV").setAttribute("aria-selected", t === "NIV" ? "true" : "false");
 
@@ -616,14 +799,14 @@ async function setTranslation(t){
   await openChapter(state.book, state.chapter);
 }
 
-function setupSettings(){
+function setupSettings() {
   on("settingsBtn", "click", () => {
     populateHighlightLabelsUI();
     openSettings();
   });
   on("settingsCloseBtn", "click", closeSettings);
 
-  if ($("settingsModal")){
+  if ($("settingsModal")) {
     $("settingsModal").addEventListener("click", (e) => {
       if (e.target === $("settingsModal")) closeSettings();
     });
@@ -631,13 +814,14 @@ function setupSettings(){
 
   populateTranslationSelect();
 
+  // Old translation tab support
   const hasOldTabs = !!$("tabKJV") || !!$("tabNIV");
-  if (hasOldTabs){
+  if (hasOldTabs) {
     if ($("tabKJV")) $("tabKJV").addEventListener("click", async () => setTranslation("KJV"));
     if ($("tabNIV")) $("tabNIV").addEventListener("click", async () => setTranslation("NIV"));
   }
 
-  if ($("themeVariantSelect")){
+  if ($("themeVariantSelect")) {
     $("themeVariantSelect").addEventListener("change", async () => {
       const v = $("themeVariantSelect").value || "blue";
       applyAccentVariant(v);
@@ -645,7 +829,7 @@ function setupSettings(){
     });
   }
 
-  if ($("fontSizeSelect")){
+  if ($("fontSizeSelect")) {
     $("fontSizeSelect").addEventListener("change", async () => {
       const px = $("fontSizeSelect").value || "14";
       applyReaderFontSize(px);
@@ -653,15 +837,15 @@ function setupSettings(){
     });
   }
 
-  if ($("saveHlLabelsBtn")){
+  if ($("saveHlLabelsBtn")) {
     $("saveHlLabelsBtn").addEventListener("click", async () => {
       await saveHighlightLabelsFromUI();
       populateHighlightFilterUI();
-      toast("Highlight labels saved.");
+      dialog?.show({ title: "Saved", message: "Highlight labels saved." });
     });
   }
 
-  if ($("resetHlLabelsBtn")){
+  if ($("resetHlLabelsBtn")) {
     $("resetHlLabelsBtn").addEventListener("click", async () => {
       await resetHighlightLabels();
       populateHighlightFilterUI();
@@ -670,11 +854,13 @@ function setupSettings(){
   }
 }
 
-/* ------------------------------ KJV Import ------------------------------ */
+/* =============================================================================
+ * 13) IMPORTS (KJV + other translations)
+ * ============================================================================= */
 
-async function ensureKJVImported(){
+async function ensureKJVImported() {
   const count = await countStore(state.db, stores().KJV_VERSES);
-  if (count > 0){
+  if (count > 0) {
     if ($("dbStatus")) $("dbStatus").textContent = `KJV imported (${count.toLocaleString()} verses)`;
     return;
   }
@@ -683,18 +869,24 @@ async function ensureKJVImported(){
   const result = await importKJVFromXML("./data/EnglishKJBible.xml", (n) => {
     if ($("dbStatus")) $("dbStatus").textContent = `Importing… ${n.toLocaleString()} verses`;
   });
-  if ($("dbStatus")) $("dbStatus").textContent =
-    `KJV imported (${result.books} books, ${result.verses.toLocaleString()} verses)`;
+
+  if ($("dbStatus")) {
+    $("dbStatus").textContent =
+      `KJV imported (${result.books} books, ${result.verses.toLocaleString()} verses)`;
+  }
 }
 
-/* ------------------------------ Book/Chapter selects ------------------------------ */
+/* =============================================================================
+ * 14) BOOK/CHAPTER/VERSEx SELECTS
+ * ============================================================================= */
 
-function maxChaptersForBook(book){
+function maxChaptersForBook(book) {
   return CHAPTER_COUNTS[book] || 50;
 }
 
-function populateBooks(){
+function populateBooks() {
   const html = BOOKS.map(b => `<option value="${b}">${b}</option>`).join("");
+
   if ($("bookSelect")) $("bookSelect").innerHTML = html;
   if ($("topBookSelect")) $("topBookSelect").innerHTML = html;
 
@@ -713,7 +905,7 @@ function populateBooks(){
   if ($("topBookSelect")) $("topBookSelect").addEventListener("change", async () => onBookChanged($("topBookSelect").value));
 }
 
-function populateChapters(){
+function populateChapters() {
   const max = maxChaptersForBook(state.book);
   const options =
     Array.from({ length: max }, (_, i) => i + 1)
@@ -738,9 +930,10 @@ function populateChapters(){
   if ($("topChapterSelect")) $("topChapterSelect").onchange = async () => onChapterChanged($("topChapterSelect").value);
 }
 
-function setVerseDropdownOptions(maxVerse){
+function setVerseDropdownOptions(maxVerse) {
   const el = $("verseSelect");
   if (!el) return;
+
   const m = Math.max(1, Number(maxVerse) || 1);
   el.innerHTML = Array.from({ length: m }, (_, i) => i + 1)
     .map(n => `<option value="${n}">${n}</option>`)
@@ -748,11 +941,13 @@ function setVerseDropdownOptions(maxVerse){
   el.value = "1";
 }
 
-/* ------------------------------ Chapter Loading ------------------------------ */
+/* =============================================================================
+ * 15) CHAPTER LOADING + VERSE SELECTION
+ * ============================================================================= */
 
-function storeForSearch(translationId){
+function storeForSearch(translationId) {
   const id = String(translationId || "").toUpperCase();
-  switch (id){
+  switch (id) {
     case "KJV": return stores().KJV_VERSES;
     case "ESV": return stores().ESV_VERSES;
     case "NIV": return stores().NIV_VERSES;
@@ -764,7 +959,7 @@ function storeForSearch(translationId){
   }
 }
 
-async function openChapter(book, chapter){
+async function openChapter(book, chapter) {
   state.book = book;
   state.chapter = chapter;
 
@@ -783,24 +978,25 @@ async function openChapter(book, chapter){
   updateSelectionChip();
 
   let verses = [];
-  try{
-    if (typeof getChapterOffline === "function"){
+  try {
+    if (typeof getChapterOffline === "function") {
       verses = await getChapterOffline(state.db, state.translation, book, chapter);
     } else {
+      // Legacy fallback path
       verses =
         state.translation === "KJV"
           ? await getChapterKJV(state.db, book, chapter)
           : await getChapterNIV(state.db, book, chapter, NIV_CONFIG);
     }
-  } catch (e){
-    if ($("verses")){
+  } catch {
+    if ($("verses")) {
       $("verses").innerHTML =
         `<div class="hint">Could not load chapter. ${navigator.onLine ? "Check translation import/settings." : "You are offline."}</div>`;
     }
     return;
   }
 
-  if (!verses.length){
+  if (!verses.length) {
     if ($("verses")) $("verses").innerHTML = `<div class="hint">No verses available for this chapter.</div>`;
     setVerseDropdownOptions(1);
     return;
@@ -818,26 +1014,32 @@ async function openChapter(book, chapter){
 
   state.verses = merged;
 
-  renderVerses($("verses"), merged, {
-    selectedKey: state.selectedKey,
-    onSelect: (v) => selectVerse(v)
-  });
+  const versesEl = $("verses");
+  if (versesEl) {
+    renderVerses(versesEl, merged, {
+      selectedKey: state.selectedKey,
+      onSelect: (v) => selectVerse(v)
+    });
+  }
 
   syncToolbarActiveStates();
 }
 
-function selectVerse(v){
+function selectVerse(v) {
   const key = `${v.book}|${v.chapter}|${v.verse}`;
 
-  if (state.selectedKey && key === state.selectedKey){
+  if (state.selectedKey && key === state.selectedKey) {
     state.selected = null;
     state.selectedKey = "";
     updateSelectionChip();
 
-    renderVerses($("verses"), state.verses, {
-      selectedKey: "",
-      onSelect: (vv) => selectVerse(vv)
-    });
+    const versesEl = $("verses");
+    if (versesEl) {
+      renderVerses(versesEl, state.verses, {
+        selectedKey: "",
+        onSelect: (vv) => selectVerse(vv)
+      });
+    }
 
     syncToolbarActiveStates();
     return;
@@ -847,24 +1049,29 @@ function selectVerse(v){
   state.selectedKey = key;
   updateSelectionChip();
 
-  renderVerses($("verses"), state.verses, {
-    selectedKey: state.selectedKey,
-    onSelect: (vv) => selectVerse(vv)
-  });
+  const versesEl = $("verses");
+  if (versesEl) {
+    renderVerses(versesEl, state.verses, {
+      selectedKey: state.selectedKey,
+      onSelect: (vv) => selectVerse(vv)
+    });
+  }
 
   syncToolbarActiveStates();
 }
 
-function syncToolbarActiveStates(){
+function syncToolbarActiveStates() {
   const st = state.selected?.style || null;
   if ($("boldBtn")) $("boldBtn").classList.toggle("active", !!st?.bold);
   if ($("underlineBtn")) $("underlineBtn").classList.toggle("active", !!st?.underline);
   if ($("verseBookmarkBtn")) $("verseBookmarkBtn").classList.toggle("active", !!st?.bookmarked);
 }
 
-/* ------------------------------ Navigation ------------------------------ */
+/* =============================================================================
+ * 16) READER NAV (Prev/Next)
+ * ============================================================================= */
 
-function setupNavigation(){
+function setupNavigation() {
   on("topPrevBtn", "click", async () => {
     state.chapter = Math.max(1, state.chapter - 1);
     if ($("chapterSelect")) $("chapterSelect").value = String(state.chapter);
@@ -881,20 +1088,22 @@ function setupNavigation(){
   });
 }
 
-/* ------------------------------ Sidebar Go ------------------------------ */
+/* =============================================================================
+ * 17) SIDEBAR "GO" (jump to verse)
+ * ============================================================================= */
 
-function setupGoButton(){
+function setupGoButton() {
   const go = async () => {
     const b = $("bookSelect") ? $("bookSelect").value : state.book;
     const c = $("chapterSelect") ? Number($("chapterSelect").value) : state.chapter;
     const vNum = $("verseSelect") ? Number($("verseSelect").value || 1) : 1;
 
-    if (b !== state.book || c !== state.chapter){
+    if (b !== state.book || c !== state.chapter) {
       await openChapter(b, c);
     }
 
     const verse = state.verses.find(v => v.verse === vNum) || null;
-    if (verse){
+    if (verse) {
       selectVerse(verse);
       const el = document.querySelector(`[data-key="${state.selectedKey}"]`);
       if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -903,7 +1112,7 @@ function setupGoButton(){
 
   on("goBtn", "click", go);
 
-  ["bookSelect","chapterSelect","verseSelect"].forEach(id => {
+  ["bookSelect", "chapterSelect", "verseSelect"].forEach(id => {
     const el = $(id);
     if (!el) return;
     el.addEventListener("keydown", (e) => {
@@ -912,19 +1121,23 @@ function setupGoButton(){
   });
 }
 
-/* ------------------------------ Overlay helpers ------------------------------ */
+/* =============================================================================
+ * 18) OVERLAY (Search/Dive Deeper)
+ * ============================================================================= */
 
-function openOverlay(title){
+function openOverlay(title) {
   if ($("overlayTitle")) $("overlayTitle").textContent = title;
   if ($("resultsOverlay")) $("resultsOverlay").hidden = false;
 }
-function closeOverlay(){
+
+function closeOverlay() {
   if ($("resultsOverlay")) $("resultsOverlay").hidden = true;
   if ($("overlayBody")) $("overlayBody").innerHTML = "";
 }
-function setupOverlayClose(){
+
+function setupOverlayClose() {
   on("overlayCloseBtn", "click", closeOverlay);
-  if ($("resultsOverlay")){
+  if ($("resultsOverlay")) {
     $("resultsOverlay").addEventListener("click", (e) => {
       if (e.target === $("resultsOverlay")) closeOverlay();
     });
@@ -935,7 +1148,7 @@ function setupOverlayClose(){
 
 function openDiveDeeperForSelected(){
   if (!state.selected) {
-    popupMessage("No Verse Selected", "");
+    popupMessage("No Verse Selected", "Select a verse first.");
     return;
   }
 
@@ -944,68 +1157,185 @@ function openDiveDeeperForSelected(){
 
   const body = $("overlayBody");
   if (!body) return;
-
   body.innerHTML = "";
 
-  const header = document.createElement("div");
-  header.className = "list-item";
-  header.innerHTML = `
-    <div class="list-title">${state.translation} · ${v.book} ${v.chapter}:${v.verse}</div>
-    <div class="list-sub">${v.text}</div>
-  `;
-  body.appendChild(header);
+  // Helper to add a standard card
+  const addCard = (title, contentNode) => {
+    const card = document.createElement("div");
+    card.className = "list-item";
 
-  const card = document.createElement("div");
-  card.className = "list-item";
-  card.innerHTML = `
-    <div class="list-title">Guided Study (Offline)</div>
-    <div class="list-sub">
-      This is an offline-friendly “study helper”. Later you can plug in commentary datasets
-      (JSON/XML) to show explanations and cross references.
-    </div>
-  `;
-  body.appendChild(card);
-}
+    const t = document.createElement("div");
+    t.className = "list-title";
+    t.textContent = title;
 
-function popupMessage(title, message){
-  openOverlay(title);
+    const s = document.createElement("div");
+    s.className = "list-sub";
+    if (typeof contentNode === "string") {
+      s.textContent = contentNode;
+    } else {
+      s.appendChild(contentNode);
+    }
 
-  const body = $("overlayBody");
-  if (!body) return;
+    card.appendChild(t);
+    card.appendChild(s);
+    body.appendChild(card);
+  };
 
-  body.innerHTML = "";
+  // 1) Header: selected verse
+  {
+    const wrap = document.createElement("div");
 
-  const card = body.closest(".overlay-card");
-  if (card) {
-    card.style.width = "360px";
-    card.style.maxWidth = "92vw";
-    card.style.height = "auto";
+    const title = document.createElement("div");
+    title.style.fontWeight = "900";
+    title.textContent = `${state.translation} · ${v.book} ${v.chapter}:${v.verse}`;
+
+    const verseText = document.createElement("div");
+    verseText.style.marginTop = "6px";
+    verseText.textContent = v.text;
+
+    wrap.appendChild(title);
+    wrap.appendChild(verseText);
+
+    addCard("Selected Verse", wrap);
   }
 
-  if (message){
-    const msg = document.createElement("div");
-    msg.className = "hint";
-    msg.textContent = message;
-    body.appendChild(msg);
+  // 2) Context (automatic): previous + next in the same chapter
+  {
+    const prev = state.verses.find(x => x.verse === v.verse - 1) || null;
+    const next = state.verses.find(x => x.verse === v.verse + 1) || null;
+
+    const wrap = document.createElement("div");
+
+    const mkLine = (label, item) => {
+      const line = document.createElement("div");
+      line.style.marginTop = "8px";
+      if (!item) {
+        line.textContent = `${label}: (none)`;
+        return line;
+      }
+      line.textContent = `${label} (${item.verse}): ${item.text}`;
+      return line;
+    };
+
+    wrap.appendChild(mkLine("Previous", prev));
+    wrap.appendChild(mkLine("Next", next));
+
+    addCard("Context (Nearby Verses)", wrap);
   }
 
-  const btnWrap = document.createElement("div");
-  btnWrap.style.display = "flex";
-  btnWrap.style.justifyContent = "center";
-  btnWrap.style.marginTop = "12px";
+  // 3) Tags/Themes (starter pack)
+  (async () => {
+    const tags = await getDiveTags(v.book, v.chapter, v.verse);
 
-  const btn = document.createElement("button");
-  btn.className = "btn primary";
-  btn.textContent = "OK";
-  btn.onclick = closeOverlay;
+    if (tags && tags.length) {
+      const wrap = document.createElement("div");
+      wrap.textContent = tags.join(" • ");
+      addCard("Themes", wrap);
+    }
 
-  btnWrap.appendChild(btn);
-  body.appendChild(btnWrap);
+    // 4) Study Helper (starter pack)
+    const explain = await getDiveExplain(v.book, v.chapter, v.verse);
+    if (explain) {
+      const wrap = document.createElement("div");
+
+      if (explain.plain) {
+        const p = document.createElement("div");
+        p.textContent = explain.plain;
+        wrap.appendChild(p);
+      }
+
+      if (Array.isArray(explain.points) && explain.points.length) {
+        const ul = document.createElement("ul");
+        ul.style.margin = "10px 0 0 18px";
+        for (const pt of explain.points) {
+          const li = document.createElement("li");
+          li.textContent = pt;
+          ul.appendChild(li);
+        }
+        wrap.appendChild(ul);
+      }
+
+      if (Array.isArray(explain.questions) && explain.questions.length) {
+        const qTitle = document.createElement("div");
+        qTitle.style.marginTop = "10px";
+        qTitle.style.fontWeight = "900";
+        qTitle.textContent = "Reflection";
+        wrap.appendChild(qTitle);
+
+        const ul = document.createElement("ul");
+        ul.style.margin = "8px 0 0 18px";
+        for (const q of explain.questions) {
+          const li = document.createElement("li");
+          li.textContent = q;
+          ul.appendChild(li);
+        }
+        wrap.appendChild(ul);
+      }
+
+      addCard("Study Helper", wrap);
+    } else {
+      addCard(
+        "Study Helper",
+        "No study notes for this verse yet. (You can expand the starter pack over time.)"
+      );
+    }
+
+    // 5) Related verses (starter pack) - clickable
+    const refs = await getDiveCrossrefs(v.book, v.chapter, v.verse);
+    if (refs && refs.length) {
+      const wrap = document.createElement("div");
+
+      for (const r of refs) {
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.gap = "10px";
+        row.style.alignItems = "center";
+        row.style.marginTop = "10px";
+        row.style.flexWrap = "wrap";
+
+        const label = document.createElement("div");
+        label.style.fontWeight = "900";
+        label.textContent = `${r.book} ${r.chapter}:${r.verse}`;
+
+        const note = document.createElement("div");
+        note.style.opacity = ".9";
+        note.textContent = r.note || "";
+
+        const btn = document.createElement("button");
+        btn.className = "btn";
+        btn.textContent = "Open";
+        btn.addEventListener("click", async () => {
+          closeOverlay();
+          setMainTab("reader");
+          await openChapter(r.book, r.chapter);
+
+          const vv = state.verses.find(x => x.verse === Number(r.verse));
+          if (vv) {
+            selectVerse(vv);
+            const el = document.querySelector(`[data-key="${state.selectedKey}"]`);
+            if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        });
+
+        row.appendChild(label);
+        if (r.note) row.appendChild(note);
+        row.appendChild(btn);
+
+        wrap.appendChild(row);
+      }
+
+      addCard("Related Verses", wrap);
+    } else {
+      addCard("Related Verses", "No cross references for this verse yet.");
+    }
+  })();
 }
 
-/* ------------------------------ Notes Modal (📝) ------------------------------ */
+/* =============================================================================
+ * 19) NOTES MODAL (📝)
+ * ============================================================================= */
 
-function openNoteModalForSelected(){
+function openNoteModalForSelected() {
   if (!ensureSelected()) return;
 
   const v = state.selected;
@@ -1021,13 +1351,14 @@ function openNoteModalForSelected(){
   if ($("noteModal")) $("noteModal").hidden = false;
 }
 
-function closeNoteModal(){
+function closeNoteModal() {
   if ($("noteModal")) $("noteModal").hidden = true;
 }
 
-function setupNoteModal(){
+function setupNoteModal() {
   on("noteCloseBtn", "click", closeNoteModal);
-  if ($("noteModal")){
+
+  if ($("noteModal")) {
     $("noteModal").addEventListener("click", (e) => {
       if (e.target === $("noteModal")) closeNoteModal();
     });
@@ -1043,64 +1374,84 @@ function setupNoteModal(){
     await upsertSelectedStyle({ note, noteType, noteFavorite });
     closeNoteModal();
 
-    if ($("panelNotes") && !$("panelNotes").hidden && $("notesListMain")) refreshNotesListInto($("notesListMain"));
+    if ($("panelNotes") && !$("panelNotes").hidden && $("notesListMain")) {
+      refreshNotesListInto($("notesListMain"));
+    }
   });
 
   on("removeNoteBtn", "click", async () => {
     if (!ensureSelected()) return;
+
     await upsertSelectedStyle({ note: "", noteType: "study", noteFavorite: false });
     closeNoteModal();
 
-    if ($("panelNotes") && !$("panelNotes").hidden && $("notesListMain")) refreshNotesListInto($("notesListMain"));
+    if ($("panelNotes") && !$("panelNotes").hidden && $("notesListMain")) {
+      refreshNotesListInto($("notesListMain"));
+    }
   });
 }
 
-/* ------------------------------ Verse Actions ------------------------------ */
+/* =============================================================================
+ * 20) VERSE ACTIONS (style upsert)
+ * ============================================================================= */
 
-async function upsertSelectedStyle(patch){
+async function upsertSelectedStyle(patch) {
   if (!ensureSelected()) return;
 
   const v = state.selected;
   const key = verseStyleKey(state.translation, v.book, v.chapter, v.verse);
 
-  const current = state.stylesMap.get(key) || {
-    key,
-    translation: state.translation,
-    book: v.book,
-    chapter: v.chapter,
-    verse: v.verse,
-    color: "none",
-    underline: false,
-    bold: false,
-    bookmarked: false,
-    note: "",
-    noteType: "study",
-    noteFavorite: false
-  };
+  const current =
+    state.stylesMap.get(key) || {
+      key,
+      translation: state.translation,
+      book: v.book,
+      chapter: v.chapter,
+      verse: v.verse,
+      color: "none",
+      underline: false,
+      bold: false,
+      bookmarked: false,
+      note: "",
+      noteType: "study",
+      noteFavorite: false
+    };
 
   const next = { ...current, ...patch, updatedAt: Date.now() };
+
   await saveVerseStyle(state.db, next);
 
+  // Update cache maps
   state.stylesMap.set(key, next);
 
-  state.verses = state.verses.map(x => {
+  // Patch verses list
+  state.verses = state.verses.map((x) => {
     if (x.book === v.book && x.chapter === v.chapter && x.verse === v.verse) {
       return { ...x, style: next };
     }
     return x;
   });
 
+  // Patch selected
   state.selected = { ...state.selected, style: next };
 
-  renderVerses($("verses"), state.verses, {
-    selectedKey: state.selectedKey,
-    onSelect: (vv) => selectVerse(vv)
-  });
+  // Re-render so UI reflects updates (badges, highlights, etc.)
+  const versesEl = $("verses");
+  if (versesEl) {
+    renderVerses(versesEl, state.verses, {
+      selectedKey: state.selectedKey,
+      onSelect: (vv) => selectVerse(vv)
+    });
+  }
 
   syncToolbarActiveStates();
 }
 
-function setupVerseToolbar(){
+/* =============================================================================
+ * 21) VERSE TOOLBAR (bold, underline, bookmark, highlight, notes, help)
+ * ============================================================================= */
+
+function setupVerseToolbar() {
   on("boldBtn", "click", async () => {
     if (!ensureSelected()) return;
     await upsertSelectedStyle({ bold: !state.selected.style?.bold });
@@ -1116,22 +1467,28 @@ function setupVerseToolbar(){
     await upsertSelectedStyle({ bookmarked: !state.selected.style?.bookmarked });
   });
 
+  // Highlight menu toggle
   on("highlightBtn", "click", (e) => {
     e.stopPropagation();
     if ($("colorMenu")) $("colorMenu").hidden = !$("colorMenu").hidden;
   });
 
+  // Choose highlight color
   document.addEventListener("click", async (e) => {
     const menu = $("colorMenu");
     if (!menu) return;
 
     const btn = e.target.closest("#colorMenu [data-color]");
     if (!btn) return;
+
+    if (!ensureSelected()) return;
+
     const c = btn.dataset.color;
     menu.hidden = true;
     await upsertSelectedStyle({ color: c || "none" });
   });
 
+  // Close color menu on outside click
   document.addEventListener("click", (e) => {
     if (e.target.closest(".toolgroup") || e.target.closest("#colorMenu")) return;
     if ($("colorMenu")) $("colorMenu").hidden = true;
@@ -1139,37 +1496,47 @@ function setupVerseToolbar(){
 
   on("noteBtn", "click", openNoteModalForSelected);
   on("verseHelpBtn", "click", openDiveDeeperForSelected);
+
+  // Legacy ID support if present
   on("helpBtn", "click", openDiveDeeperForSelected);
 }
 
-/* ------------------------------ Notes List ------------------------------ */
+/* =============================================================================
+ * 22) NOTES LIST (Notes tab)
+ * ============================================================================= */
 
-async function refreshNotesListInto(targetEl){
+async function refreshNotesListInto(targetEl) {
+  if (!targetEl) return;
+
   const all = await listNotes(state.db, state.translation);
 
   let filtered = all;
-  if (state.notesFilter === "fav") filtered = all.filter(n => !!n.noteFavorite);
-  if (state.notesFilter === "study") filtered = all.filter(n => (n.noteType || "study") === "study");
-  if (state.notesFilter === "research") filtered = all.filter(n => (n.noteType || "study") === "research");
-  if (state.notesFilter === "personal") filtered = all.filter(n => (n.noteType || "study") === "personal");
+  if (state.notesFilter === "fav") filtered = all.filter((n) => !!n.noteFavorite);
+  if (state.notesFilter === "study") filtered = all.filter((n) => (n.noteType || "study") === "study");
+  if (state.notesFilter === "research") filtered = all.filter((n) => (n.noteType || "study") === "research");
+  if (state.notesFilter === "personal") filtered = all.filter((n) => (n.noteType || "study") === "personal");
 
   filtered = filtered.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
   const limit = state.notesFilter === "recent" ? 50 : 500;
   const shown = filtered.slice(0, limit);
 
   targetEl.innerHTML = "";
-  if (!shown.length){
+
+  if (!shown.length) {
     targetEl.innerHTML = `<div class="hint">No notes yet. Select a verse and click 📝.</div>`;
     return;
   }
 
-  for (const n of shown){
+  for (const n of shown) {
     const card = document.createElement("div");
     card.className = "list-item";
 
     const t = document.createElement("div");
     t.className = "list-title";
-    t.textContent = `${n.book} ${n.chapter}:${n.verse} • ${(n.noteType || "study").toUpperCase()}${n.noteFavorite ? " • ★" : ""}`;
+    t.textContent = `${n.book} ${n.chapter}:${n.verse} • ${(n.noteType || "study").toUpperCase()}${
+      n.noteFavorite ? " • ★" : ""
+    }`;
 
     const s = document.createElement("div");
     s.className = "list-sub";
@@ -1184,8 +1551,10 @@ async function refreshNotesListInto(targetEl){
     btn.addEventListener("click", async () => {
       setMainTab("reader");
       await openChapter(n.book, n.chapter);
-      const vv = state.verses.find(x => x.verse === n.verse);
+
+      const vv = state.verses.find((x) => x.verse === n.verse);
       if (vv) selectVerse(vv);
+
       openNoteModalForSelected();
     });
 
@@ -1197,33 +1566,56 @@ async function refreshNotesListInto(targetEl){
   }
 }
 
-function setupNotesPanel(){
-  if ($("notesAllBtn")){
+function setupNotesPanel() {
+  if ($("notesAllBtn")) {
     $("notesAllBtn").addEventListener("click", async () => {
       state.notesFilter = "all";
       if ($("notesListMain")) await refreshNotesListInto($("notesListMain"));
     });
   }
 
-  on("notesRecentBtn", "click", async () => { state.notesFilter = "recent"; if ($("notesListMain")) await refreshNotesListInto($("notesListMain")); });
-  on("notesFavBtn", "click", async () => { state.notesFilter = "fav"; if ($("notesListMain")) await refreshNotesListInto($("notesListMain")); });
-  on("notesStudyBtn", "click", async () => { state.notesFilter = "study"; if ($("notesListMain")) await refreshNotesListInto($("notesListMain")); });
-  on("notesResearchBtn", "click", async () => { state.notesFilter = "research"; if ($("notesListMain")) await refreshNotesListInto($("notesListMain")); });
-  on("notesPersonalBtn", "click", async () => { state.notesFilter = "personal"; if ($("notesListMain")) await refreshNotesListInto($("notesListMain")); });
+  on("notesRecentBtn", "click", async () => {
+    state.notesFilter = "recent";
+    if ($("notesListMain")) await refreshNotesListInto($("notesListMain"));
+  });
+
+  on("notesFavBtn", "click", async () => {
+    state.notesFilter = "fav";
+    if ($("notesListMain")) await refreshNotesListInto($("notesListMain"));
+  });
+
+  on("notesStudyBtn", "click", async () => {
+    state.notesFilter = "study";
+    if ($("notesListMain")) await refreshNotesListInto($("notesListMain"));
+  });
+
+  on("notesResearchBtn", "click", async () => {
+    state.notesFilter = "research";
+    if ($("notesListMain")) await refreshNotesListInto($("notesListMain"));
+  });
+
+  on("notesPersonalBtn", "click", async () => {
+    state.notesFilter = "personal";
+    if ($("notesListMain")) await refreshNotesListInto($("notesListMain"));
+  });
 }
 
-/* ------------------------------ Bookmarks ------------------------------ */
+/* =============================================================================
+ * 23) BOOKMARKS (Bookmarks tab)
+ * ============================================================================= */
 
-async function renderChapterBookmarksInto(targetEl){
+async function renderChapterBookmarksInto(targetEl) {
+  if (!targetEl) return;
+
   const items = await listBookmarks(state.db, state.translation);
   targetEl.innerHTML = "";
 
-  if (!items.length){
+  if (!items.length) {
     targetEl.innerHTML = `<div class="hint">No chapter bookmarks yet.</div>`;
     return;
   }
 
-  for (const b of items){
+  for (const b of items) {
     const card = document.createElement("div");
     card.className = "list-item";
 
@@ -1254,17 +1646,22 @@ async function renderChapterBookmarksInto(targetEl){
   }
 }
 
-async function renderVerseBookmarksOnlyInto(targetEl){
+async function renderVerseBookmarksOnlyInto(targetEl) {
+  if (!targetEl) return;
+
   const items = await listAllStyles(state.db, state.translation);
-  const filtered = items.filter(s => !!s.bookmarked).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  const filtered = items
+    .filter((s) => !!s.bookmarked)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
   targetEl.innerHTML = "";
-  if (!filtered.length){
+
+  if (!filtered.length) {
     targetEl.innerHTML = `<div class="hint">No verse bookmarks yet.</div>`;
     return;
   }
 
-  for (const s of filtered.slice(0, 500)){
+  for (const s of filtered.slice(0, 500)) {
     const card = document.createElement("div");
     card.className = "list-item";
 
@@ -1285,7 +1682,8 @@ async function renderVerseBookmarksOnlyInto(targetEl){
     btn.addEventListener("click", async () => {
       setMainTab("reader");
       await openChapter(s.book, s.chapter);
-      const vv = state.verses.find(x => x.verse === s.verse);
+
+      const vv = state.verses.find((x) => x.verse === s.verse);
       if (vv) selectVerse(vv);
     });
 
@@ -1297,22 +1695,26 @@ async function renderVerseBookmarksOnlyInto(targetEl){
   }
 }
 
-async function renderHighlightsOnlyInto(targetEl){
+async function renderHighlightsOnlyInto(targetEl) {
+  if (!targetEl) return;
+
   const items = await listAllStyles(state.db, state.translation);
 
-  let filtered = items.filter(s => (s.color && s.color !== "none"));
-  if (state.highlightFilter && state.highlightFilter !== "all"){
-    filtered = filtered.filter(s => String(s.color).toLowerCase() === state.highlightFilter);
+  let filtered = items.filter((s) => s.color && s.color !== "none");
+  if (state.highlightFilter && state.highlightFilter !== "all") {
+    filtered = filtered.filter((s) => String(s.color).toLowerCase() === state.highlightFilter);
   }
+
   filtered = filtered.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
   targetEl.innerHTML = "";
-  if (!filtered.length){
+
+  if (!filtered.length) {
     targetEl.innerHTML = `<div class="hint">No highlights yet.</div>`;
     return;
   }
 
-  for (const s of filtered.slice(0, 500)){
+  for (const s of filtered.slice(0, 500)) {
     const card = document.createElement("div");
     card.className = "list-item";
 
@@ -1333,7 +1735,8 @@ async function renderHighlightsOnlyInto(targetEl){
     btn.addEventListener("click", async () => {
       setMainTab("reader");
       await openChapter(s.book, s.chapter);
-      const vv = state.verses.find(x => x.verse === s.verse);
+
+      const vv = state.verses.find((x) => x.verse === s.verse);
       if (vv) selectVerse(vv);
     });
 
@@ -1345,10 +1748,10 @@ async function renderHighlightsOnlyInto(targetEl){
   }
 }
 
-function setupBookmarksPanel(){
+function setupBookmarksPanel() {
   const sel = $("hlFilterSelect");
 
-  if (sel && !sel.dataset.wired){
+  if (sel && !sel.dataset.wired) {
     sel.dataset.wired = "1";
     sel.addEventListener("change", async () => {
       state.highlightFilter = sel.value || "all";
@@ -1367,7 +1770,7 @@ function setupBookmarksPanel(){
   });
 
   on("bookmarksHighlightsBtnMain", "click", () => {
-    if (sel){
+    if (sel) {
       sel.hidden = false;
       populateHighlightFilterUI();
     }
@@ -1375,9 +1778,11 @@ function setupBookmarksPanel(){
   });
 }
 
-/* ------------------------------ Search ------------------------------ */
+/* =============================================================================
+ * 24) SEARCH (Sidebar Search pane)
+ * ============================================================================= */
 
-function setupSearch(){
+function setupSearch() {
   on("searchBtn", "click", async () => {
     const q = $("searchInput") ? $("searchInput").value.trim() : "";
     if (!q) return;
@@ -1390,16 +1795,22 @@ function setupSearch(){
     if ($("searchStatus")) $("searchStatus").textContent = `${hits.length} result(s)`;
     openOverlay("Search Results");
 
-    renderOverlayList($("overlayBody"), hits.map(h => ({
-      title: `${h.book} ${h.chapter}:${h.verse}`,
-      subtitle: h.text,
-      actionText: "Open",
-      onAction: async () => {
-        closeOverlay();
-        setMainTab("reader");
-        await openChapter(h.book, h.chapter);
-      }
-    })));
+    const body = $("overlayBody");
+    if (!body) return;
+
+    renderOverlayList(
+      body,
+      hits.map((h) => ({
+        title: `${h.book} ${h.chapter}:${h.verse}`,
+        subtitle: h.text,
+        actionText: "Open",
+        onAction: async () => {
+          closeOverlay();
+          setMainTab("reader");
+          await openChapter(h.book, h.chapter);
+        }
+      }))
+    );
   });
 
   on("clearSearchBtn", "click", () => {
@@ -1408,9 +1819,11 @@ function setupSearch(){
   });
 }
 
-/* ------------------------------ Quick Tools ------------------------------ */
+/* =============================================================================
+ * 25) QUICK TOOLS (Bookmark chapter, Copy chapter)
+ * ============================================================================= */
 
-function setupQuickActions(){
+function setupQuickActions() {
   on("bookmarkBtn", "click", async () => {
     const saved = await toggleBookmark(state.db, {
       translation: state.translation,
@@ -1423,20 +1836,31 @@ function setupQuickActions(){
   on("copyBtn", "click", async () => {
     const title = `${state.translation} ${state.book} ${state.chapter}`;
     const text = $("verses") ? $("verses").innerText : "";
-    await navigator.clipboard.writeText(`${title}\n\n${text}`);
-    toast("Copied.");
+
+    try {
+      await navigator.clipboard.writeText(`${title}\n\n${text}`);
+      toast("Copied.");
+    } catch {
+      popupMessage("Copy Failed", "Clipboard permission was blocked by the browser.");
+    }
   });
 }
 
-/* ------------------------------ Boot ------------------------------ */
+/* =============================================================================
+ * 26) BOOT
+ * ============================================================================= */
 
-async function init(){
+async function init() {
   await registerServiceWorker();
   setupInstallButton();
 
   state.db = await openDb();
+
   if ($("netStatus")) setNetStatus($("netStatus"));
   if ($("dbStatus")) $("dbStatus").textContent = "IndexedDB ready";
+
+  // Create dialog helper (now that DOM exists)
+  dialog = createDialog();
 
   await setupTheme();
 
@@ -1458,21 +1882,29 @@ async function init(){
   setupSidebarCollapse();
   await restoreSidebarState();
 
+  // Sidebar close button in the sidebar itself
   on("sidebarCloseBtn", "click", async () => {
-  if (isMobileLayout()){
-    document.body.classList.remove("sidebar-drawer-open");
-    await saveSetting(state.db, "drawerOpen", "0");
-  } else {
-    document.body.classList.add("sidebar-hidden");
-    await saveSetting(state.db, "sidebarHidden", "1");
-  }
-});
+    if (isMobileLayout()) {
+      document.body.classList.remove("sidebar-drawer-open");
+      await saveSetting(state.db, "drawerOpen", "0");
+    } else {
+      document.body.classList.add("sidebar-hidden");
+      await saveSetting(state.db, "sidebarHidden", "1");
+    }
+  });
 
   wireMainTabs();
   setMainTab("reader");
 
   // Import the selected translation (KJV by default)
   await ensureTranslationImported(state.translation);
+
+  // Appearance settings (accent + font size)
+  await restoreAppearanceSettings();
+
+  // Populate settings UI bits
+  populateHighlightLabelsUI();
+  populateHighlightFilterUI();
 
   populateBooks();
   populateChapters();
@@ -1486,16 +1918,12 @@ async function init(){
   setupSearch();
   setupQuickActions();
 
-  await restoreAppearanceSettings();
-
-  // Populate settings UI bits
-  populateHighlightLabelsUI();
-  populateHighlightFilterUI();
+  await updateBottomBarForTranslation();
 
   await openChapter(state.book, state.chapter);
 
   window.addEventListener("resize", () => {
-    if (!isMobileLayout()){
+    if (!isMobileLayout()) {
       document.body.classList.remove("sidebar-drawer-open");
     }
   });
